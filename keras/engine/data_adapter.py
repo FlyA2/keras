@@ -1394,8 +1394,9 @@ class _ClusterCoordinatorDataHandler(DataHandler):
   def sync(self):
     self._model._cluster_coordinator.join()  # pylint: disable=protected-access
 
-
+@keras_export("keras.__internal__.utils.get_data_handler", v1=[])
 def get_data_handler(*args, **kwargs):
+  """Creates a DataHandler."""
   if getattr(kwargs["model"], "_cluster_coordinator", None):
     return _ClusterCoordinatorDataHandler(*args, **kwargs)
   return DataHandler(*args, **kwargs)
