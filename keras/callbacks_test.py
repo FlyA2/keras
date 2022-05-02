@@ -330,7 +330,7 @@ class KerasCallbacksTest(test_combinations.TestCase):
 
   def test_backup_restore_train_counter(self):
     if not tf.compat.v1.executing_eagerly():
-      self.skipTest('BackupAndRestore only available when execution is enabled')
+      self.skipTest('BackupAndRestore only available when eager execution is enabled')
     model = keras.Sequential([keras.layers.Dense(1)])
     model.compile('sgd', 'mse')
     cbk = BackupAndRestore(self.get_temp_dir())
@@ -392,6 +392,49 @@ class KerasCallbacksTest(test_combinations.TestCase):
       model.fit(
           dataset, epochs=20, steps_per_epoch=5, callbacks=[backup_callback])
 
+  def _test_backup_and_restore_callback_at_steps(self, cls, epoch_int,
+                                                 steps_int):
+    if not tf.compat.v1.executing_eagerly():
+      self.skipTest(
+          'BackupAndRestore only available when eager execution is enabled')
+
+    class InterruptingCallback(keras.callbacks.Callback):
+      """A callback to intentionally introduce interruption to training."""
+
+      def on_epoch_end(self, epoch, log=None):
+        if epoch == epoch_int:
+          raise RuntimeError('EpochInterruption')
+
+      def on_batch_end(self, batch, logs=None):
+        if batch == steps_int:
+          raise RuntimeError('StepsInterruption')
+
+    model = keras.Sequential([keras.layers.Dense(10)])
+    optimizer = gradient_descent.SGD()
+    model.compile(optimizer, loss='mse')
+
+    x = tf.random.uniform((24, 10))
+    y = tf.random.uniform((24,))
+    dataset = tf.data.Dataset.from_tensor_slices((x, y)).repeat().batch(2)
+
+    backup_callback = cls(backup_dir=self.get_temp_dir(), save_freq=7)
+    try:
+      model.fit(
+          dataset,
+          epochs=20,
+          steps_per_epoch=5,
+          callbacks=[backup_callback, InterruptingCallback()])
+    except RuntimeError as e:
+      print("printing error", e)
+      if str(e) == 'EpochInterruption':
+        logging.warning('***Handling interruption at epoch***')
+      elif str(e) == 'StepsInterruption':
+        print("warning logged")
+        logging.warning('***Handling interruption at Nth step***')
+      # This continues at the epoch where it left off.
+      model.fit(
+          dataset, epochs=20, steps_per_epoch=5, callbacks=[backup_callback])
+
   def test_experimental_backup_and_restore(self):
     """Ensure the legacy endpoint of `BackupAndRestore` gives warning."""
 
@@ -424,6 +467,40 @@ class KerasCallbacksTest(test_combinations.TestCase):
                    'endpoint is deprecated')
     self.assertNotIn(warning_msg, '\n'.join(warning_messages))
     warning_msg = ('***Handling interruption***')
+    self.assertIn(warning_msg, '\n'.join(warning_messages))
+
+  def test_backup_and_restore_steps(self):
+    """Ensure the public endpoint of `BackupAndRestore` is working."""
+
+    warning_messages = []
+
+    def warning(msg):
+      warning_messages.append(msg)
+
+    with tf.compat.v1.test.mock.patch.object(logging, 'warning', warning):
+      # interrupt at steps before 1 epoch
+      self._test_backup_and_restore_callback_at_steps(
+          BackupAndRestore, epoch_int=15, steps_int=2)
+
+    warning_msg = ('`tf.keras.callbacks.experimental.BackupAndRestore` '
+                   'endpoint is deprecated')
+    self.assertNotIn(warning_msg, '\n'.join(warning_messages))
+    warning_msg = ('***Handling interruption at Nth step***')
+    self.assertIn(warning_msg, '\n'.join(warning_messages))
+
+    with tf.compat.v1.test.mock.patch.object(logging, 'warning', warning):
+      # interrupt at steps after 1 epoch
+      self._test_backup_and_restore_callback_at_steps(
+          BackupAndRestore, epoch_int=15, steps_int=7)
+
+    warning_msg = ('***Handling interruption at Nth step***')
+    self.assertIn(warning_msg, '\n'.join(warning_messages))
+
+    # interrupt at epoch before steps
+    with tf.compat.v1.test.mock.patch.object(logging, 'warning', warning):
+      self._test_backup_and_restore_callback_at_steps(
+          BackupAndRestore, epoch_int=1, steps_int=7)
+    warning_msg = ('***Handling interruption at epoch***')
     self.assertIn(warning_msg, '\n'.join(warning_messages))
 
   @test_combinations.run_all_keras_modes

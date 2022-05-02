@@ -1664,9 +1664,14 @@ class BackupAndRestore(Callback):
         cannot be reused elsewhere to store other files, e.g. by
         BackupAndRestore callback of another training, or by another callback
         (ModelCheckpoint) of the same training.
+      save_freq: `'epoch'` or integer or `'on_demand'`. When using `'epoch'`
+        the callback saves the checkpoint after each epoch. When using integer,
+        the callback saves the checkpoint at end of this many batches. when
+        using `'on_demand'`, the callback saves the checkpoint upon receiving a
+        preemption signal.
   """
 
-  def __init__(self, backup_dir):
+  def __init__(self, backup_dir, save_freq='epoch'):
     super(BackupAndRestore, self).__init__()
     self.backup_dir = backup_dir
     self._supports_tf_logs = True
@@ -1675,6 +1680,9 @@ class BackupAndRestore(Callback):
         tf.distribute.MultiWorkerMirroredStrategy,
         tf.distribute.experimental.TPUStrategy, tf.distribute.TPUStrategy,
         tf.distribute.experimental.ParameterServerStrategy)
+    self.save_freq = save_freq
+    self._batches_seen_since_last_saving = 0
+    self._last_batch_seen = 0
 
     if not tf.executing_eagerly():
       if tf.inside_function():
@@ -1707,6 +1715,9 @@ class BackupAndRestore(Callback):
     self._training_state = self.model._training_state
     self._training_state.restore()
 
+  def _implements_train_batch_hooks(self):
+    return self.save_freq != ('epoch' or 'on_demand')
+
   def on_train_end(self, logs=None):
     # pylint: disable=protected-access
     # On exit of training, delete the training state backup file that was saved
@@ -1717,10 +1728,34 @@ class BackupAndRestore(Callback):
     del self._training_state
     del self.model._training_state
 
+  def on_train_batch_end(self, batch, logs=None):
+    if self._should_save_on_batch(batch):
+      self._training_state.back_up(batch=batch)
+
+  def on_epoch_begin(self, epoch, logs=None):
+    self._current_epoch = epoch
+
   def on_epoch_end(self, epoch, logs=None):
     # Back up the model and current epoch for possible future recovery.
-    self._training_state.back_up(epoch)
+    if self.save_freq == 'epoch':
+      self._training_state.back_up(epoch=epoch)
 
+  def _should_save_on_batch(self, batch):
+    """Handles batch-level saving logic"""
+    if self.save_freq == ('epoch' or 'on_demand'):
+      return False
+
+    if batch <= self._last_batch_seen:  # New epoch.
+      add_batches = batch + 1  # batches are zero-indexed.
+    else:
+      add_batches = batch - self._last_batch_seen
+    self._batches_seen_since_last_saving += add_batches
+    self._last_batch_seen = batch
+
+    if self._batches_seen_since_last_saving >= self.save_freq:
+      self._batches_seen_since_last_saving = 0
+      return True
+    return False
 
 @keras_export('keras.callbacks.experimental.BackupAndRestore', v1=[])
 @deprecation.deprecated_endpoints(
@@ -1739,7 +1774,6 @@ class BackupAndRestoreExperimental(BackupAndRestore):
         'deprecated and will be removed in a future release. Please use '
         '`tf.keras.callbacks.BackupAndRestore`.')
     super(BackupAndRestoreExperimental, self).__init__(*args, **kwargs)
-
 
 @keras_export('keras.callbacks.EarlyStopping')
 class EarlyStopping(Callback):

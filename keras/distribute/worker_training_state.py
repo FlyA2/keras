@@ -78,18 +78,30 @@ class WorkerTrainingState:
       self.write_checkpoint_manager = tf.train.CheckpointManager(
           checkpoint, directory=write_checkpoint_dir, max_to_keep=1)
 
-  def back_up(self, epoch):
+  def back_up(self, epoch=None, batch=None):
     """Back up the current state of training into a checkpoint file.
 
     Args:
       epoch: The current epoch information to be saved.
+      batch
+      batch: The current batch(step) information to be saved
     """
-    backend.set_value(self._ckpt_saved_epoch, epoch)
-    # Save the model plus CKPT_SAVED_EPOCH variable.
-    if self.write_checkpoint_manager.save():
-      distributed_file_utils.remove_temp_dirpath(
-          self.write_checkpoint_manager.directory,
-          self._model.distribute_strategy)
+    if epoch is not None:
+      backend.set_value(self._ckpt_saved_epoch, epoch)
+      # Save the model plus CKPT_SAVED_EPOCH variable.
+      if self.write_checkpoint_manager.save():
+        distributed_file_utils.remove_temp_dirpath(
+            self.write_checkpoint_manager.directory,
+            self._model.distribute_strategy)
+    # training state need not be backed up twice. it should either be at epoch
+    # broundaries or nth step
+    elif batch is not None:
+      backend.set_value(self._ckpt_saved_epoch, batch)
+      # Save the model plus CKPT_SAVED_EPOCH variable.
+      if self.write_checkpoint_manager.save():
+        distributed_file_utils.remove_temp_dirpath(
+            self.write_checkpoint_manager.directory,
+            self._model.distribute_strategy)
 
   def restore(self):
     """Restore the training state from the backed up checkpoint file.
